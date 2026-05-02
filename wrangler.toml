@@ -1,0 +1,14 @@
+name = "lotery-apiv3"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+BEARER_TOKEN = "lt-apiv3-Xk9mP2qR4vW"
+DOMINICANA_BASE = "https://www.conectate.com.do/loterias/mobile-api-new"
+FALLBACK_BASE = "https://loteriasamericanas.com/mobile-api-new"
+ENABLE_DOCS = "true"
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallbacks = ["**/*.html"]
+fallthrough = true

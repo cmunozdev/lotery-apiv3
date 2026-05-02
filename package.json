@@ -1,0 +1,17 @@
+{
+  "name": "lotery-apiv3",
+  "version": "3.0.0",
+  "description": "Cloudflare Worker — dual lottery API proxy: loteriasdominicanas.com (XOR) + elboletoganador.com (open)",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.71.0"
+  }
+}
