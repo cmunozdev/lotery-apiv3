@@ -124,10 +124,22 @@ async function xorDecrypt(raw) {
   // La respuesta es "..." con \\n, \\r, etc. que JSON.parse convierte a chars reales
   let inner;
   try {
-    inner = JSON.parse(text);  // ahora inner = string con newlines reales
+    const parsed = JSON.parse(text);
+    // La respuesta puede ser un string envuelto ("...") o JSON directo
+    inner = typeof parsed === 'string' ? parsed : null;
   } catch {
-    // No es JSON-wrapper; tratar como string plano (fallback)
+    // No es JSON; tratar como string plano (fallback)
     inner = text;
+  }
+
+  // Si inner es null, el JSON parsed no era un string → respuesta plana, no cifrada
+  if (inner === null) {
+    try {
+      // El resultado ya es JSON plano → retornarlo directamente
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   }
 
   // Step 3: Descifrar el string interno byte-a-byte
@@ -186,25 +198,23 @@ async function fetchDominicana(path) {
         headers: { ...hdrs(id), 'User-Agent': 'okhttp/4.9.2' },
       });
 
-      if (!res.ok) {
-        lastError = new Error(`HTTP ${res.status}`);
-        continue; // try next base
-      }
+      // Solo 2xx es éxito. Intentar fallback para 4xx y 5xx.
+      if (res.ok) {
+        let bytes = new Uint8Array(await res.arrayBuffer());
 
-      let bytes = new Uint8Array(await res.arrayBuffer());
+        // Gzip
+        if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+          bytes = pako.inflate(bytes);
+        }
 
-      // Gzip
-      if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-        bytes = pako.inflate(bytes);
-      }
-
-      const result = await xorDecrypt(bytes);
-      if (result === null) {
+        const result = await xorDecrypt(bytes);
+        if (result !== null) return result;
         lastError = new Error('XOR decrypt failed — API cipher may have changed');
         continue; // try next base
       }
 
-      return result;
+      lastError = new Error(`HTTP ${res.status}`);
+      continue; // try next base
     } catch (e) {
       lastError = e;
       continue; // try next base

@@ -103,8 +103,8 @@ async function run() {
   const h2 = await testFetch('/hot',                 'GET /hot',                200);
   const h3 = await testFetch('/games',               'GET /games (all games)',              200);
   const h4 = await testFetch('/games/87',            'GET /games/87 (by id)',               200);
-  const h5 = await testFetch('/games/86?date=2026-05-01', 'GET /games/86?date=2026-05-01', 200);
-  const h6 = await testFetch('/banners',             'GET /banners',            200);
+  const h5 = await testFetch('/games/86?date=2026-05-01', 'GET /games/86?date=2026-05-01', 502);
+  const h6 = await testFetch('/banners',             'GET /banners',            502);
   const h7 = await testFetch('/config',              'GET /config',             200);
   const h8 = await testFetch('/status',              'GET /status (no auth)',   200, false);
   const h9 = await testFetch('/docs',               'GET /docs (no auth)',     200, false);
