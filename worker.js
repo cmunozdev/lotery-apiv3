@@ -13,10 +13,12 @@ import pako from 'pako';
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 const CFG = {
-  DOMINICANA_BASE: '',  // set via env.DOMINICANA_BASE
-  FALLBACK_BASE   : '',  // set via env.FALLBACK_BASE (fallback on primary failure)
-  BEARER_TOKEN   : '',  // set via env.BEARER_TOKEN
-  ENABLE_DOCS    : '',  // set via env.ENABLE_DOCS ("true" to enable, anything else blocks)
+  PRIMARY_BASE  : '',   // base URL 1 (try first)
+  FALLBACK_BASE : '',   // base URL 2 (retry on failure)
+  COMPANIES_PATH: '',   // path para /companies  (ej: "/mobile-api-new")
+  DEFAULT_PATH  : '',   // path para todo lo demás (ej: "/mobile-api/v3")
+  BEARER_TOKEN  : '',   // set via env.BEARER_TOKEN
+  ENABLE_DOCS   : '',   // set via env.ENABLE_DOCS ("true" to enable docs)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,10 +26,12 @@ const CFG = {
 // ─────────────────────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env) {
-    CFG.BEARER_TOKEN    = env.BEARER_TOKEN    || CFG.BEARER_TOKEN;
-    CFG.DOMINICANA_BASE = env.DOMINICANA_BASE || CFG.DOMINICANA_BASE;
-    CFG.FALLBACK_BASE  = env.FALLBACK_BASE  || CFG.FALLBACK_BASE;
-    CFG.ENABLE_DOCS     = env.ENABLE_DOCS     || CFG.ENABLE_DOCS;
+    CFG.BEARER_TOKEN   = env.BEARER_TOKEN    || CFG.BEARER_TOKEN;
+    CFG.PRIMARY_BASE   = env.PRIMARY_BASE    || CFG.PRIMARY_BASE;
+    CFG.FALLBACK_BASE = env.FALLBACK_BASE   || CFG.FALLBACK_BASE;
+    CFG.COMPANIES_PATH = env.COMPANIES_PATH || CFG.COMPANIES_PATH;
+    CFG.DEFAULT_PATH  = env.DEFAULT_PATH    || CFG.DEFAULT_PATH;
+    CFG.ENABLE_DOCS   = env.ENABLE_DOCS     || CFG.ENABLE_DOCS;
 
     const url  = new URL(request.url);
     const path = url.pathname;
@@ -163,12 +167,12 @@ async function xorDecrypt(raw) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Upstream fetcher
 // ─────────────────────────────────────────────────────────────────────────────
-function hdrs(identity) {
+function hdrs(identity, base) {
   return {
     'Accept'             : 'application/json',
     'Accept-Language'   : 'es-ES,es;q=0.9,en;q=0.8',
-    'Origin'             : CFG.DOMINICANA_BASE,
-    'Referer'           : `${CFG.DOMINICANA_BASE}/`,
+    'Origin'             : base,
+    'Referer'           : `${base}/`,
     'User-Agent'        : identity.ua,
     'X-Forwarded-For'   : identity.ip,
     'X-Real-IP'          : identity.ip,
@@ -181,48 +185,45 @@ function hdrs(identity) {
   };
 }
 
-async function fetchDominicana(path) {
-  // Try primary base, then fallback if configured
-  const bases = [];
-  if (CFG.DOMINICANA_BASE) bases.push(CFG.DOMINICANA_BASE);
-  if (CFG.FALLBACK_BASE  ) bases.push(CFG.FALLBACK_BASE);
+// Fetch genérico: prueba PRIMARY_BASE, luego FALLBACK_BASE.
+async function fetchAPI(apiPath) {
+  const bases = [CFG.PRIMARY_BASE, CFG.FALLBACK_BASE].filter(Boolean);
+  if (bases.length === 0) throw new Error('No upstream configured');
 
-  let lastError;
-
+  // Construir variantes: PRIMARY_BASE+COMPANIES_PATH, PRIMARY_BASE+DEFAULT_PATH, etc.
+  const variants = [];
   for (const base of bases) {
-    const id  = newIdentity();
-    const url = `${base}${path}`;
-
-    try {
-      const res = await fetch(url, {
-        headers: { ...hdrs(id), 'User-Agent': 'okhttp/4.9.2' },
-      });
-
-      // Solo 2xx es éxito. Intentar fallback para 4xx y 5xx.
-      if (res.ok) {
-        let bytes = new Uint8Array(await res.arrayBuffer());
-
-        // Gzip
-        if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-          bytes = pako.inflate(bytes);
-        }
-
-        const result = await xorDecrypt(bytes);
-        if (result !== null) return result;
-        lastError = new Error('XOR decrypt failed — API cipher may have changed');
-        continue; // try next base
-      }
-
-      lastError = new Error(`HTTP ${res.status}`);
-      continue; // try next base
-    } catch (e) {
-      lastError = e;
-      continue; // try next base
-    }
+    if (CFG.COMPANIES_PATH) variants.push(`${base}${CFG.COMPANIES_PATH}${apiPath}`);
+    if (CFG.DEFAULT_PATH  ) variants.push(`${base}${CFG.DEFAULT_PATH}${apiPath}`);
+    if (!CFG.COMPANIES_PATH && !CFG.DEFAULT_PATH) variants.push(`${base}${apiPath}`);
   }
 
+  let lastError;
+  for (const url of variants) {
+    const id = newIdentity();
+    try {
+      const res = await fetch(url, {
+        headers: { ...hdrs(id, CFG.PRIMARY_BASE), 'User-Agent': 'okhttp/4.9.2' },
+      });
+
+      if (res.ok) {
+        let bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = pako.inflate(bytes);
+        const result = await xorDecrypt(bytes);
+        if (result !== null) return result;
+        lastError = new Error('XOR decrypt failed');
+      } else {
+        lastError = new Error(`HTTP ${res.status}`);
+      }
+    } catch (e) {
+      lastError = e;
+    }
+  }
   throw lastError || new Error('All upstream sources failed');
 }
+
+// Alias para claridad semántica
+const fetchDominicana = fetchAPI;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers — limpiar score de símbolos auxiliares (!, =, +, ?, X, etc.)
@@ -328,9 +329,9 @@ async function getGameById(path, url) {
     }
   }
 
-  // Con fecha → buscar historial vía /games?game_id=X&date=Y
+  // Con fecha → buscar historial vía /games
   try {
-    const raw = await fetchDominicana(`/games?game_id=${gameId}&date=${date}&encrypt=true`);
+    const raw = await fetchAPI(`/games?game_id=${gameId}&date=${date}&encrypt=true`);
     return ok({ gameId: +gameId, date, data: raw });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
@@ -339,7 +340,7 @@ async function getGameById(path, url) {
 
 async function getHot(url) {
   try {
-    const raw = await fetchDominicana('/hot?encrypt=true');
+    const raw = await fetchAPI('/hot?encrypt=true');
     return ok({ data: raw });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
@@ -348,7 +349,7 @@ async function getHot(url) {
 
 async function getAllGames() {
   try {
-    const raw = await fetchDominicana('/companies?encrypt=true');
+    const raw = await fetchAPI('/companies?encrypt=true');
 
     // companies viene como array directo o como { companies: [...] }
     const companies = Array.isArray(raw) ? raw : (raw.companies || []);
@@ -379,7 +380,7 @@ async function getAllGames() {
 
 async function getBanners(url) {
   try {
-    const raw = await fetchDominicana('/banners?encrypt');
+    const raw = await fetchAPI('/banners?encrypt');
     return ok({ data: raw });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
@@ -388,7 +389,7 @@ async function getBanners(url) {
 
 async function getConfig(url) {
   try {
-    const raw = await fetchDominicana('/config?encrypt');
+    const raw = await fetchAPI('/config?encrypt');
     return ok({ data: raw });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
@@ -401,17 +402,39 @@ async function getConfig(url) {
 async function handleStatus() {
   try {
     const id = newIdentity();
-    const res = await fetch(`${CFG.DOMINICANA_BASE}/companies?encrypt=true`, {
-      method: 'HEAD',
-      headers: { ...hdrs(id), 'User-Agent': 'okhttp/4.9.2' },
-    });
-    return ok({
-      service  : 'lotery-apiv3',
-      version  : '3.1.0',
-      upstream : 'ok',
-      status   : res.status,
-      timestamp: new Date().toISOString(),
-    });
+    const bases = [CFG.PRIMARY_BASE, CFG.FALLBACK_BASE].filter(Boolean);
+    // Armar URLs: base + DEFAULT_PATH (o solo base si DEFAULT_PATH no está)
+    const testUrls = [];
+    for (const base of bases) {
+      if (CFG.DEFAULT_PATH) testUrls.push(`${base}${CFG.DEFAULT_PATH}/companies?encrypt=true`);
+      else testUrls.push(`${base}/companies?encrypt=true`);
+    }
+
+    let lastError;
+    let okStatus = null;
+    for (const url of testUrls) {
+      try {
+        const res = await fetch(url, {
+          method: 'HEAD',
+          headers: { ...hdrs(id, CFG.PRIMARY_BASE), 'User-Agent': 'okhttp/4.9.2' },
+        });
+        okStatus = res.status;
+        break;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    if (okStatus !== null) {
+      return ok({
+        service  : 'lotery-apiv3',
+        version  : '3.1.0',
+        upstream : 'ok',
+        status   : okStatus,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    throw lastError;
   } catch (e) {
     return new Response(JSON.stringify({
       ok      : false,
