@@ -329,10 +329,32 @@ async function getGameById(path, url) {
     }
   }
 
-  // Con fecha → buscar historial vía /games
+  // Con fecha → buscar historial vía /games (2 llamadas: 1ra con fecha, 2da con última fecha)
   try {
     const raw = await fetchAPI(`/games?game_id=${gameId}&date=${date}&encrypt=true`);
-    return ok({ gameId: +gameId, date, data: raw });
+    const sessions = raw?.sessions || [];
+
+    // Segunda llamada: última fecha del primer resultado → accumulate más resultados
+    if (sessions.length > 0) {
+      const lastDate = sessions[sessions.length - 1].date;
+      if (lastDate && lastDate !== date) {
+        // Restar 1 día para obtener resultados previos sin solapar
+        const prevDate = new Date(lastDate);
+        prevDate.setDate(prevDate.getDate() - 1);
+        const prevDateStr = prevDate.toISOString().slice(0, 10);
+        try {
+          const raw2 = await fetchAPI(`/games?game_id=${gameId}&date=${prevDateStr}&encrypt=true`);
+          const more = (raw2?.sessions || []).filter(
+            s => !sessions.find(existing => existing.id === s.id)
+          );
+          sessions.push(...more);
+        } catch {
+          // ignore second call failure
+        }
+      }
+    }
+
+    return ok({ gameId: +gameId, date, data: raw, sessions });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
   }
