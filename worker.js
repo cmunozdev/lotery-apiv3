@@ -320,7 +320,11 @@ async function getGameById(path, url) {
         const gameList = Array.isArray(company.games) ? company.games : [];
         const found = gameList.find(g => String(g.id) === String(gameId));
         if (found) {
-          return ok(found);
+          return ok({
+            ...found,
+            session : cleanSession(found.session),
+            sessions: Array.isArray(found.sessions) ? found.sessions.map(s => cleanSession(s)) : null,
+          });
         }
       }
       return err(404, 'not_found', `Game ${gameId} not found`);
@@ -354,7 +358,7 @@ async function getGameById(path, url) {
       }
     }
 
-    return ok({ gameId: +gameId, date, data: raw, sessions });
+    return ok({ gameId: +gameId, date, data: { ...raw, sessions }, sessions });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
   }
