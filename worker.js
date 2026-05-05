@@ -332,7 +332,7 @@ async function getGameById(path, url) {
   // Con fecha → buscar historial vía /games (2 llamadas: 1ra con fecha, 2da con última fecha)
   try {
     const raw = await fetchAPI(`/games?game_id=${gameId}&date=${date}&encrypt=true`);
-    const sessions = raw?.sessions || [];
+    const sessions = (raw?.sessions || []).map(s => cleanSession(s));
 
     // Segunda llamada: última fecha del primer resultado → accumulate más resultados
     if (sessions.length > 0) {
@@ -344,7 +344,7 @@ async function getGameById(path, url) {
         const prevDateStr = prevDate.toISOString().slice(0, 10);
         try {
           const raw2 = await fetchAPI(`/games?game_id=${gameId}&date=${prevDateStr}&encrypt=true`);
-          const more = (raw2?.sessions || []).filter(
+          const more = ((raw2?.sessions || []).map(s => cleanSession(s))).filter(
             s => !sessions.find(existing => existing.id === s.id)
           );
           sessions.push(...more);
