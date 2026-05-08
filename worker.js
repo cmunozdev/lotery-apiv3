@@ -448,6 +448,80 @@ async function getHot(url) {
   }
 }
 
+async function getGamesByDate(url) {
+  const date = url.searchParams.get('date');
+
+  try {
+    const raw = await fetchAPI('/companies?encrypt=true');
+    const companies = Array.isArray(raw) ? raw : Object.values(raw?.companies || raw);
+
+    // Armar lista de juegos
+    const gameList = [];
+    for (const company of companies) {
+      for (const game of (company.games || [])) {
+        gameList.push({ id: game.id, title: game.title, company: company.title });
+      }
+    }
+
+    // Sin fecha: usar /companies (fast, no calls individuales)
+    if (!date) {
+      const games = [];
+      for (const company of companies) {
+        for (const game of (company.games || [])) {
+          const sessions = game.sessions || (game.session ? [game.session] : []);
+          if (sessions.length === 0) continue;
+          games.push({
+            game_id  : game.id,
+            title    : game.title,
+            company  : company.title,
+            session  : cleanSession(sessions[0]),
+            found_for_date: true,
+          });
+        }
+      }
+      return ok({ date: null, total: games.length, games });
+    }
+
+    // Con fecha: consultar individualmente cada juego en batches (enviar date+1 al upstream)
+    // El upstream de DO espera DD-MM-YYYY
+    const [year, month, day] = date.split('-');
+    const d = new Date(+year, +month - 1, +day + 1);
+    const upstreamDate = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+    const BATCH_SIZE = 3;
+    const games = [];
+
+    for (let i = 0; i < gameList.length; i += BATCH_SIZE) {
+      const batch = gameList.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(game =>
+          fetchAPI(`/games?game_id=${game.id}&date=${upstreamDate}&encrypt=true`)
+            .then(raw => {
+              const sessions = (raw?.sessions || []).map(s => cleanSession(s));
+              if (sessions.length > 0) {
+                return {
+                  game_id  : game.id,
+                  title    : game.title,
+                  company  : game.company,
+                  session  : sessions[0],
+                  found_for_date: sessions[0].date === date,
+                };
+              }
+              return null;
+            })
+            .catch(() => null)
+        )
+      );
+      for (const r of batchResults) {
+        if (r) games.push(r);
+      }
+    }
+
+    return ok({ date, total: games.length, games });
+  } catch (e) {
+    return err(502, 'upstream_error', e.message);
+  }
+}
+
 async function getAllGames() {
   try {
     const raw = await fetchAPI('/companies?encrypt=true');
@@ -859,9 +933,9 @@ function openApiSpec() {
       "/games": {
         get: {
           summary   : "Resultados de todos los juegos por fecha",
-          tags      : ["Loterias Hondulas"],
+          tags      : ["Loterias Dominicanas"],
           parameters: [
-            { name: "date", in: "query", required: false, schema: { type: "string", format: "date" }, description: "YYYY-MM-DD — opcional. Si se pasa, busca resultados del día o último anterior. Si se omite, devuelve el último resultado de cada juego." },
+            { name: "date", in: "query", required: false, schema: { type: "string", format: "date" }, description: "YYYY-MM-DD — opcional. Si se pasa, consulta cada juego individualmente. Si se omite, usa /companies (último resultado)." },
           ],
           responses: {
             200: { description: "Lista de juegos con su resultado", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" }, date: { type: "string", nullable: true }, total: { type: "integer" }, games: { type: "array" } } } } } },
