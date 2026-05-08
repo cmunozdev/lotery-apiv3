@@ -35,13 +35,16 @@ function testCleanScore() {
   console.log('\n🧹 TEST: cleanScore()');
   const cases = [
     [['!22', '!17', '=02', '=16', '10'], ['22', '17', '02', '16', '10']],
-    [['03', '19', '35', '51', '67', '+15', '?2X'], ['03', '19', '35', '51', '67', '15', '2X']],
-    [['+15', '+24'], ['15', '24']],
+    [['03', '19', '35', '51', '67', '+15', '?2X'], ['03', '19', '35', '51', '67', '+15', '2X']],
+    [['+15', '+24'], ['+15', '+24']],
     [['06', '04', '30', '29', '27'], ['06', '04', '30', '29', '27']],
+    [['KG', 'XX', 'AA'], ['KG', 'XX', 'AA']],
+    [['!KG', '=XX'], ['KG', 'XX']],
+    [['?JG', '?47 Banco'], ['JG', '47 Banco']],
   ];
   function cleanScore(score) {
-    if (typeof score === 'string') return score.replace(/^[^0-9]+/, '');
-    if (Array.isArray(score)) return score.map(item => Array.isArray(item) ? cleanScore(item) : cleanScore(item));
+    if (typeof score === 'string') return score.replace(/^[!?=]+/, '');
+    if (Array.isArray(score)) return score.map(item => Array.isArray(item) ? item.map(cleanScore) : cleanScore(item));
     return score;
   }
   let pass = 0;

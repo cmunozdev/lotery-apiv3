@@ -58,9 +58,8 @@ export default {
     // ── Dominican API routes ─────────────────────────────────────────────────
     if (path === '/companies'            ) return getCompanies(url);
     if (match(path, '/games/:id')              ) return getGameById(path, url);
-    if (path === '/games'                ) return getAllGames();
-    if (path === '/hot'                  ) return getHot(url);
-    if (path === '/games'                ) return getGames(url);
+    if (path === '/games'                     ) return getGamesByDate(url);
+    if (path === '/games'                     ) return getAllGames();
     if (path === '/banners'              ) return getBanners(url);
     if (path === '/config'               ) return getConfig(url);
 
@@ -236,8 +235,7 @@ function stripHtml(html) {
 
 function cleanScore(score) {
   if (typeof score === 'string') {
-    // Solo prefijo: "!22" → "22", "=03" → "03", "?2X" → "2X"
-    return score.replace(/^[^0-9]+/, '');
+    return score.replace(/^[!?=]+/, '');
   }
   if (Array.isArray(score)) {
     return score.map(item => Array.isArray(item) ? item.map(cleanScore) : cleanScore(item));
@@ -333,9 +331,12 @@ async function getGameById(path, url) {
     }
   }
 
-  // Con fecha → buscar historial vía /games (2 llamadas: 1ra con fecha, 2da con última fecha)
+  // Con fecha → buscar historial vía /games (2 llamadas: 1ra con fecha+1, 2da con última fecha)
   try {
-    const raw = await fetchAPI(`/games?game_id=${gameId}&date=${date}&encrypt=true`);
+    const d = new Date(date);
+    d.setDate(d.getDate() + 1);
+    const nextDay = d.toISOString().slice(0, 10);
+    const raw = await fetchAPI(`/games?game_id=${gameId}&date=${nextDay}&encrypt=true`);
     const sessions = (raw?.sessions || []).map(s => cleanSession(s));
 
     // Segunda llamada: última fecha del primer resultado → accumulate más resultados
@@ -359,6 +360,80 @@ async function getGameById(path, url) {
     }
 
     return ok({ gameId: +gameId, date, data: { ...raw, sessions }, sessions });
+  } catch (e) {
+    return err(502, 'upstream_error', e.message);
+  }
+}
+
+async function getGamesByDate(url) {
+  const date = url.searchParams.get('date');
+
+  try {
+    const raw = await fetchAPI('/companies?encrypt=true');
+    const companies = Array.isArray(raw) ? raw : (raw.companies || []);
+
+    // Sin fecha: usar /companies (fast, no calls individuales)
+    if (!date) {
+      const games = [];
+      for (const company of companies) {
+        for (const game of (company.games || [])) {
+          const sessions = game.sessions || [];
+          if (sessions.length > 0) {
+            games.push({
+              game_id  : game.id,
+              title    : game.title,
+              company  : company.title,
+              session  : cleanSession(sessions[0]),
+              found_for_date: true,
+            });
+          }
+        }
+      }
+      return ok({ date: null, total: games.length, games });
+    }
+
+    // Armar lista de juegos
+    const gameList = [];
+    for (const company of companies) {
+      for (const game of (company.games || [])) {
+        gameList.push({ id: game.id, title: game.title, company: company.title });
+      }
+    }
+
+    // Con fecha: consultar individualmente cada juego en batches (enviar date+1 al upstream)
+    const d = new Date(date);
+    d.setDate(d.getDate() + 1);
+    const nextDay = d.toISOString().slice(0, 10);
+    const BATCH_SIZE = 3;
+    const games = [];
+
+    for (let i = 0; i < gameList.length; i += BATCH_SIZE) {
+      const batch = gameList.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(game =>
+          fetchAPI(`/games?game_id=${game.id}&date=${nextDay}&encrypt=true`)
+            .then(raw => {
+              const sessions = (raw?.sessions || []).map(s => cleanSession(s));
+              if (sessions.length > 0) {
+                return {
+                  game_id  : game.id,
+                  title    : game.title,
+                  company  : game.company,
+                  session  : sessions[0],
+                  found_for_date: sessions[0].date === date,
+                };
+              }
+              return null;
+            })
+            .catch(() => null)
+        )
+      );
+      for (const r of batchResults) {
+        if (r) games.push(r);
+      }
+    }
+
+    return ok({ date, total: games.length, games });
   } catch (e) {
     return err(502, 'upstream_error', e.message);
   }
@@ -525,7 +600,7 @@ function landingPage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>lotery-apiv3 · API de Loterías Dominicanas</title>
+<title>lotery-apiv3 · API de Loterias Hondulas</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%23c9950a'/%3E%3Ctext x='20' y='28' font-size='20' text-anchor='middle' font-family='Georgia' font-weight='bold' fill='%23000'%3EL%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -604,7 +679,7 @@ footer{text-align:center;padding:24px 0;border-top:1px solid var(--border);color
   </header>
 
   <section class="hero">
-    <h1>API de Loterías Dominicanas</h1>
+    <h1>API de Loterias Hondulas</h1>
     <p>Proxy con identidad anónima para loteriasdominicanas.com. Descifra respuestas XOR byte-cipher + gzip automáticamente.</p>
     <div class="token-hint">
       <span>AUTH</span>
@@ -743,7 +818,7 @@ function openApiSpec() {
     servers: [{ url: "/", description: "lotery-apiv3" }],
     tags: [
       { name: "System", description: "Rutas públicas" },
-      { name: "Loterias Dominicanas", description: "loteriasdominicanas.com/mobile-api/v3 — cifrado XOR" },
+      { name: "Loterias Hondulas", description: "loteriasdominicanas.com/mobile-api/v3 — cifrado XOR" },
     ],
     paths: {
 
@@ -762,7 +837,7 @@ function openApiSpec() {
       "/companies": {
         get: {
           summary: "Empresas de lotería — Compañías disponibles",
-          tags   : ["Loterias Dominicanas"],
+          tags   : ["Loterias Hondulas"],
           responses: {
             200: { description: "Lista de compañías", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" }, companies: { type: "array" } } } } } },
             502: { description: "Error upstream o fallo en descifrado" },
@@ -773,7 +848,7 @@ function openApiSpec() {
       "/hot": {
         get: {
           summary: "Números calientes",
-          tags   : ["Loterias Dominicanas"],
+          tags   : ["Loterias Hondulas"],
           responses: {
             200: { description: "Datos de números calientes", content: { "application/json": { schema: { type: "object" } } } },
             502: { description: "Error upstream" },
@@ -783,10 +858,13 @@ function openApiSpec() {
 
       "/games": {
         get: {
-          summary   : "Todos los juegos — extraídos de /companies",
-          tags      : ["Loterias Dominicanas"],
+          summary   : "Resultados de todos los juegos por fecha",
+          tags      : ["Loterias Hondulas"],
+          parameters: [
+            { name: "date", in: "query", required: false, schema: { type: "string", format: "date" }, description: "YYYY-MM-DD — opcional. Si se pasa, busca resultados del día o último anterior. Si se omite, devuelve el último resultado de cada juego." },
+          ],
           responses: {
-            200: { description: "Todos los juegos agrupados por compañía", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" }, total: { type: "integer" }, companies: { type: "array" } } } } } },
+            200: { description: "Lista de juegos con su resultado", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" }, date: { type: "string", nullable: true }, total: { type: "integer" }, games: { type: "array" } } } } } },
             502: { description: "Error upstream" },
           },
         },
@@ -795,7 +873,7 @@ function openApiSpec() {
       "/games/{id}": {
         get: {
           summary   : "Un juego por ID — con historial opcional por fecha",
-          tags      : ["Loterias Dominicanas"],
+          tags      : ["Loterias Hondulas"],
           parameters: [
             { name: "id",   in: "path",  required: true,  schema: { type: "integer" },             description: "Game ID" },
             { name: "date", in: "query", required: false, schema: { type: "string", format: "date" }, description: "YYYY-MM-DD — incluye historial" },
@@ -811,7 +889,7 @@ function openApiSpec() {
       "/banners": {
         get: {
           summary: "Banners",
-          tags   : ["Loterias Dominicanas"],
+          tags   : ["Loterias Hondulas"],
           responses: {
             200: { description: "Datos de banners", content: { "application/json": { schema: { type: "object" } } } },
             502: { description: "Error upstream" },
@@ -822,7 +900,7 @@ function openApiSpec() {
       "/config": {
         get: {
           summary: "Configuración",
-          tags   : ["Loterias Dominicanas"],
+          tags   : ["Loterias Hondulas"],
           responses: {
             200: { description: "Configuración de la app", content: { "application/json": { schema: { type: "object" } } } },
             502: { description: "Error upstream" },
